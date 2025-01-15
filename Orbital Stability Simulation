@@ -1,0 +1,137 @@
+import numpy as np
+from scipy.integrate import solve_ivp
+from pyquaternion import Quaternion
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.animation import FuncAnimation
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+# Satellite parameters
+I = np.diag([10, 15, 20])  # Moment of inertia matrix (kg·m²)
+Kp = 2.0  # Proportional gain
+Kd = 1.0  # Derivative gain
+
+# Satellite dynamics function with stability control
+def satellite_dynamics(t, state, I, disturbance_torque):
+    q = Quaternion(state[:4])  # Orientation (quaternion)
+    omega = state[4:]          # Angular velocity (rad/s)
+
+    # Quaternion derivative
+    q_dot = 0.5 * Quaternion(0, *omega) * q
+
+    # Control torque to stabilize
+    control_torque = -Kp * omega - Kd * np.sign(omega)
+
+    # Total torque: control + disturbance
+    total_torque = control_torque + disturbance_torque
+
+    # Angular velocity derivative
+    omega_dot = np.linalg.inv(I).dot(total_torque - np.cross(omega, I.dot(omega)))
+
+    # Combine derivatives
+    return np.concatenate([q_dot.elements, omega_dot])
+
+# Function to generate perturbations at multiple intervals
+def generate_perturbation(t):
+    if int(t) % 10 == 0 or int(t) % 25 == 0:  # Apply perturbations at 10s and 25s intervals
+        return np.random.uniform(-0.03, 0.03, 3)  # Random torque
+    return np.array([0.0, 0.0, 0.0])
+
+# Initial state: Orientation (quaternion) + Angular velocity (rad/s)
+q0 = Quaternion(axis=[1, 0, 0], angle=np.pi/6)  # Initial orientation
+omega0 = np.array([0.5, -0.3, 0.2])             # Initial angular velocity
+state0 = np.concatenate([q0.elements, omega0])
+
+# Simulation time
+t_span = (0, 60)
+t_eval = np.linspace(t_span[0], t_span[1], 600)
+
+# Solve the dynamics with time-varying perturbations
+solution = solve_ivp(
+    lambda t, y: satellite_dynamics(t, y, I, generate_perturbation(t)),
+    t_span, state0, t_eval=t_eval
+)
+
+# Extract results
+time = solution.t
+quaternions = solution.y[:4].T
+
+# Create a cube (Satellite body)
+def create_cube(center, size):
+    x, y, z = center
+    d = size / 2
+    vertices = [
+        [x-d, y-d, z-d], [x+d, y-d, z-d], [x+d, y+d, z-d], [x-d, y+d, z-d],
+        [x-d, y-d, z+d], [x+d, y-d, z+d], [x+d, y+d, z+d], [x-d, y+d, z+d],
+    ]
+    edges = [
+        [vertices[0], vertices[1], vertices[2], vertices[3]],  # Bottom face
+        [vertices[4], vertices[5], vertices[6], vertices[7]],  # Top face
+        [vertices[0], vertices[1], vertices[5], vertices[4]],  # Side faces
+        [vertices[2], vertices[3], vertices[7], vertices[6]],
+        [vertices[0], vertices[4], vertices[7], vertices[3]],
+        [vertices[1], vertices[5], vertices[6], vertices[2]],
+    ]
+    return edges
+
+# Animation update function
+def update(frame, quaternions, ax):
+    ax.cla()  # Clear the axis
+
+    # Draw Earth
+    earth_radius = 1
+    u = np.linspace(0, 2 * np.pi, 50)
+    v = np.linspace(0, np.pi, 50)
+    x = earth_radius * np.outer(np.cos(u), np.sin(v))
+    y = earth_radius * np.outer(np.sin(u), np.sin(v))
+    z = earth_radius * np.outer(np.ones(np.size(u)), np.cos(v))
+    ax.plot_surface(x, y, z, color='b', alpha=0.6)
+
+    # Satellite position and orientation
+    orbit_radius = 1.5
+    satellite_position = [
+        orbit_radius * np.cos(frame * 2 * np.pi / len(quaternions)),
+        orbit_radius * np.sin(frame * 2 * np.pi / len(quaternions)),
+        0,
+    ]
+
+    q = Quaternion(quaternions[frame])  # Get current quaternion
+    rotation_matrix = q.rotation_matrix
+
+    # Draw satellite cube
+    edges = create_cube(satellite_position, 0.2)
+    rotated_edges = [
+        [satellite_position + rotation_matrix @ (np.array(vertex) - satellite_position) for vertex in edge]
+        for edge in edges
+    ]
+
+    for edge in rotated_edges:
+        poly = Poly3DCollection([edge], color='gray', alpha=1.0)
+        ax.add_collection3d(poly)
+
+    # Draw satellite axes
+    origin = satellite_position
+    axis_length = 0.5
+    ax.quiver(*origin, *rotation_matrix[:, 0], color='r', length=axis_length, label='X-axis')
+    ax.quiver(*origin, *rotation_matrix[:, 1], color='g', length=axis_length, label='Y-axis')
+    ax.quiver(*origin, *rotation_matrix[:, 2], color='b', length=axis_length, label='Z-axis')
+
+    # Axis limits and labels
+    ax.set_xlim([-2, 2])
+    ax.set_ylim([-2, 2])
+    ax.set_zlim([-2, 2])
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title("Satellite Attitude Control with Random Perturbations")
+
+    # Add legend for axes
+    ax.legend()
+
+# Plot and animate
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection='3d')
+ani = FuncAnimation(fig, update, frames=len(quaternions), fargs=(quaternions, ax), interval=50)
+
+plt.show()
+
